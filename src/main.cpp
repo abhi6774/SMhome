@@ -3,13 +3,12 @@
 #include <WiFiClient.h>
 #include <ESP8266WebServer.h>
 #include <ESP8266mDNS.h>
-#include <EEPROM.h>
 #include <ArduinoJson.h>
-
-int Addr = 0;
+#include "FS.h"
+#include <LittleFS.h>
 
 ESP8266WebServer server(80);
-const char *settings;
+
 class Car
 {
 private:
@@ -189,33 +188,10 @@ public:
 Car car = Car();
 
 void serverHandles();
-
-bool writeData(String data)
+bool loadConfig();
+bool saveConfig(const char *ssid, const char *password);
+void resetWiFi()
 {
-  size_t i;
-  for (i = 0; i < data.length(); i++)
-  {
-    EEPROM.put(i, data[i]);
-  }
-  EEPROM.put(i, NULL);
-  return true;
-}
-
-String readData(int startpoint)
-{
-  String data = "";
-  data.reserve(256);
-  int i = 0;
-  char str;
-  do
-  {
-    EEPROM.get(i, str);
-    if (str == NULL)
-      continue;
-    data += str;
-    i++;
-  } while (str != NULL);
-  return data;
 }
 
 void handleRoot()
@@ -265,16 +241,39 @@ void handleNotFound()
 
 void handleSettings()
 {
-  DynamicJsonDocument setting(256);
 
   if (server.method() == HTTP_POST)
   {
+    String ssid;
+    String password;
+
+    ssid = server.arg("ssid");
+    password = server.arg("password");
+
+    if (!saveConfig(ssid.c_str(), password.c_str()))
+    {
+      Serial.println("Failed to save config");
+    }
+    else
+    {
+      Serial.println("Config saved");
+      StaticJsonDocument<200> response;
+      doc["response"] = "Wifi Configured";
+      doc["action"] = "Restarting the device";
+      String data;
+      serializeJson(response, data);
+      server.send(200, "application/json", data.c_str());
+      StaticJsonDocument<200> settings;
+      WiFi.disconnect();
+      WiFi.begin(ssid, password);
+    }
   }
   else
   {
-
     Serial.print("settings not available");
-    server.send(200, "application/json", settings);
+    String data;
+    serializeJson(settings, data);
+    server.send(200, "application/json", data.c_str());
   }
 }
 
@@ -284,32 +283,30 @@ void handlePing()
   server.send(200, "application/json", ping_res);
 }
 
-IPAddress local_ip(192, 168, 79, 52);
-IPAddress gateway(192, 168, 79, 52);
-IPAddress subnet(255, 255, 255, 0);
-
 void setup(void)
 {
   car.setupPinMode();
   Serial.begin(115200);
-  EEPROM.begin(512);
-  WiFi.config(local_ip, gateway, subnet);
+  delay(1000);
+  Serial.println("Mounting FS...");
+  // WiFi.config(local_ip, gateway, subnet);
   WiFi.mode(WIFI_STA);
-  DynamicJsonDocument doc(256);
-  deserializeJson(doc, readData(0));
-  String ssid = doc["ssid"];
-  String password = doc["password"];
 
-  if (ssid)
+  if (!LittleFS.begin())
   {
-    String settings = "{\"ssid\":\"" + "Avnica" + "\",\"password\":\"" + "zbef2601" + "\"}";
-    writeData(settings);
+    Serial.println("Failed to mount file system");
+    return;
   }
 
-  Serial.print(ssid);
-  Serial.print(" ");
-  Serial.println(password);
-  WiFi.begin(ssid, password);
+  if (!loadConfig())
+  {
+    Serial.println("Failed to load config");
+  }
+  else
+  {
+
+    Serial.println("WiFi Configured");
+  }
 
   // Wait for connection
   while (WiFi.status() != WL_CONNECTED)
@@ -318,9 +315,7 @@ void setup(void)
     Serial.print(".");
   }
 
-  Serial.println("");
   Serial.print("Connected to ");
-  Serial.println(ssid);
   Serial.print("IP address: ");
   Serial.println(WiFi.localIP());
 
@@ -336,6 +331,67 @@ void loop(void)
 {
   server.handleClient();
   MDNS.update();
+}
+
+StaticJsonDocument<200> saveConfig(const char *ssid, const char *password)
+{
+  StaticJsonDocument<200> doc;
+  doc["ssid"] = ssid;
+  doc["password"] = password;
+
+  File configFile = LittleFS.open("/config.json", "w");
+  if (!configFile)
+  {
+    Serial.println("Failed to open config file for writing");
+    return false;
+  }
+  serializeJson(doc, configFile);
+  return doc;
+}
+
+bool loadConfig()
+{
+  File configFile = LittleFS.open("/config.json", "r");
+  if (!configFile)
+  {
+    Serial.println("Failed to open config file");
+    if (!saveConfig("Avnica", "zbef2601"))
+    {
+      Serial.println("Failed to save config");
+      return false;
+    }
+    else
+    {
+      Serial.println("Config saved");
+    }
+  }
+
+  size_t size = configFile.size();
+  if (size > 1024)
+  {
+    Serial.println("Config file size is too large");
+    return false;
+  }
+  std::unique_ptr<char[]> buf(new char[size]);
+
+  configFile.readBytes(buf.get(), size);
+
+  StaticJsonDocument<200> doc;
+  auto error = deserializeJson(doc, buf.get());
+  if (error)
+  {
+    Serial.println("Failed to parse config file");
+    return false;
+  }
+  const char *ssid = doc["ssid"];
+  const char *password = doc["password"];
+
+  Serial.print("SSID: ");
+  Serial.println(ssid);
+  Serial.print("Password: ");
+  Serial.println(password);
+  WiFi.begin(ssid, password);
+  return true;
 }
 
 void serverHandles()

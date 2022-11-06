@@ -96,7 +96,7 @@ void setup()
   else
   {
     Serial.println("WiFi Configured");
-    }
+  }
 }
 
 void loop()

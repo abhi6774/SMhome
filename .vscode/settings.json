@@ -59,5 +59,6 @@
         "**/CVS": true,
         "**/.DS_Store": true,
         "**/Thumbs.db": true
-    }
+    },
+    "C_Cpp.errorSquiggles": "Disabled"
 }
